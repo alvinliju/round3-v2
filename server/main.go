@@ -12,8 +12,11 @@ import (
 
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // store users locally
@@ -24,9 +27,10 @@ var updates []Update
 var subscriptions []Subscribe
 
 type User struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Role     string `json:"role" default:"user"`
+	ID       primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	Username string             `json:"username"`
+	Password string             `json:"password"`
+	Role     string             `json:"role" default:"reader"`
 }
 
 // profile type
@@ -125,14 +129,37 @@ func userRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//add user to local db
-	users = append(users, user)
-	_ = users
+	collection := db.Collection("users")
+
+	var existingUser User
+	err := collection.FindOne(context.TODO(), bson.M{"username": user.Username}).Decode(&existingUser)
+	if err == nil {
+		http.Error(w, "User already exists", http.StatusInternalServerError)
+		return
+	}
+
+	if err != mongo.ErrNoDocuments {
+		http.Error(w, "Error checking username", http.StatusInternalServerError)
+		return
+	}
+
+	hashed, _ := bcrypt.GenerateFromPassword([]byte(user.Password), 12)
+	user.Password = string(hashed)
+
+	user.ID = primitive.NewObjectID()
+
+	ctx := context.TODO()
+
+	result, err := collection.InsertOne(ctx, user)
+	if err != nil {
+		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		return
+	}
 
 	response := Response{
 		Status:  http.StatusCreated,
 		Message: "User created",
-		Data:    user.Username,
+		Data:    map[string]interface{}{"id": result.InsertedID, "username": user.Username},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -147,6 +174,9 @@ type loginUser struct {
 }
 
 func userLogin(w http.ResponseWriter, r *http.Request) {
+
+	collection := db.Collection("users")
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Invalid Method", http.StatusMethodNotAllowed)
 		return
@@ -158,13 +188,18 @@ func userLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existingUser, exists := findUser(users, userCredentials.Username)
-	if !exists {
-		http.Error(w, "Invalid Username", http.StatusUnauthorized)
+	//find user in db
+	var existingUserFromDB User
+	ctx := context.TODO()
+	err := collection.FindOne(ctx, bson.M{"username": userCredentials.Username}).Decode(&existingUserFromDB)
+
+	if err == mongo.ErrNoDocuments {
+		http.Error(w, "User doesnt exist", http.StatusNotFound)
 		return
 	}
 
-	if userCredentials.Password != existingUser.Password {
+	err = bcrypt.CompareHashAndPassword([]byte(existingUserFromDB.Password), []byte(userCredentials.Password))
+	if err != nil {
 		http.Error(w, "Invalid Password", http.StatusUnauthorized)
 		return
 	}
@@ -172,7 +207,7 @@ func userLogin(w http.ResponseWriter, r *http.Request) {
 	response := Response{
 		Status:  http.StatusAccepted,
 		Message: "Login Success",
-		Data:    userCredentials.Username,
+		Data:    existingUserFromDB.Username,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
