@@ -7,10 +7,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -20,11 +23,16 @@ import (
 )
 
 // store users locally
-var users []User
 var profiles []Profile
 var founders []Founder
 var updates []Update
 var subscriptions []Subscribe
+
+type ContextKey string
+
+const (
+	UserContextKey ContextKey = "user"
+)
 
 type User struct {
 	ID       primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
@@ -35,9 +43,9 @@ type User struct {
 
 // profile type
 type Profile struct {
-	UserRef string `json:"username"`
-	Bio     string `json:"bio"`
-	Website string `json:"website"`
+	UserRef primitive.ObjectID `bson:"userRef" json:"-"`
+	Bio     string             `json:"bio"`
+	Website string             `json:"website"`
 }
 
 // update type
@@ -70,12 +78,15 @@ type Response struct {
 }
 
 var db *mongo.Database
+var SECRET []byte
 
 func init() {
 	err := godotenv.Load(".env")
 	if err != nil {
 		log.Fatal("Error loading .env file")
 	}
+
+	SECRET = []byte(os.Getenv("SECRET"))
 
 	MONGO_URI := os.Getenv("MONGO_URI")
 
@@ -95,7 +106,7 @@ func main() {
 	r.HandleFunc("/", homeHandler)
 	r.HandleFunc("/register", userRegister)
 	r.HandleFunc("/login", userLogin)
-	r.HandleFunc("/create/profile", createProfile)
+	r.HandleFunc("/create/profile", authMiddleware(createProfile))
 	r.HandleFunc("/create/founder", creteFounder)
 	r.HandleFunc("/create/updates", createUpdates)
 	r.HandleFunc("/founder", fetchFounder)
@@ -107,6 +118,40 @@ func main() {
 		fmt.Println("Error starting the server")
 	}
 
+}
+
+// middleware
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Auth header not found", http.StatusBadRequest)
+			return
+		}
+
+		tokenString := strings.Replace(authHeader, "Bearer ", "", 1)
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("Unexpected signing method", token.Header["alg"])
+			}
+			return SECRET, nil
+		})
+
+		if err != nil {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			ctx := context.WithValue(r.Context(), UserContextKey, claims)
+			fmt.Println(ctx)
+			fmt.Println(claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		} else {
+			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
+		}
+	})
 }
 
 func homeHandler(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +192,8 @@ func userRegister(w http.ResponseWriter, r *http.Request) {
 	user.Password = string(hashed)
 
 	user.ID = primitive.NewObjectID()
+
+	user.Role = "Reader"
 
 	ctx := context.TODO()
 
@@ -204,26 +251,39 @@ func userLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	claims := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"userID": existingUserFromDB.ID.Hex(),
+		"iss":    "round3dev",
+		"role":   existingUserFromDB.Role,
+		"exp":    time.Now().Add(time.Hour).Unix(),
+		"iat":    time.Now().Unix(),
+	})
+
+	token, err := claims.SignedString(SECRET)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	type MetadataWithToken struct {
+		Token    string
+		Username string
+	}
+
+	metadata := MetadataWithToken{
+		Token:    token,
+		Username: existingUserFromDB.Username,
+	}
+
 	response := Response{
 		Status:  http.StatusAccepted,
 		Message: "Login Success",
-		Data:    existingUserFromDB.Username,
+		Data:    metadata,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(response)
-}
-
-// helper for login
-func findUser(users []User, targetUsername string) (*User, bool) {
-	for _, user := range users {
-		if user.Username == targetUsername {
-			return &user, true
-		}
-
-	}
-	return nil, false
 }
 
 // Crete profile route
@@ -233,7 +293,25 @@ func createProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//no need to do validation will verify userinfo via jwt since no we are not in prod we can get username from body
+	UserData, ok := r.Context().Value(UserContextKey).(jwt.MapClaims)
+	fmt.Println("create profile userdata:", UserData)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	userIDStr, ok := UserData["userID"].(string)
+	if !ok {
+		http.Error(w, "Invalid user ID", http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := primitive.ObjectIDFromHex(userIDStr)
+	fmt.Println("userID:", userID)
+	if err != nil {
+		http.Error(w, "Invalid user ID", http.StatusUnauthorized)
+		return
+	}
 
 	var profileData Profile
 	if err := json.NewDecoder(r.Body).Decode(&profileData); err != nil {
@@ -241,39 +319,28 @@ func createProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existingProfile, exists, rangeCount := findProfiles(profiles, profileData.UserRef)
-	_ = existingProfile
+	profileData.UserRef = userID
 
-	if exists {
-		profiles[rangeCount].Bio = profileData.Bio
-		profiles[rangeCount].Website = profileData.Website
+	collection := db.Collection("profile")
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(profiles)
+	filter := bson.M{"userRef": userID}
+	update := bson.M{"$set": profileData}
+	opts := options.Update().SetUpsert(true)
 
+	result, err := collection.UpdateOne(context.TODO(), filter, update, opts)
+	_ = result
+	if err != nil {
+		http.Error(w, "Failed to save profile", http.StatusNotFound)
 		return
 	}
 
-	profiles = append(profiles, profileData)
+	var Updateduser Profile
+	collection.FindOne(context.TODO(), filter).Decode(&Updateduser)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(profiles)
+	json.NewEncoder(w).Encode(Updateduser)
 
-}
-
-// helper for createProfile
-func findProfiles(profiles []Profile, currentUsername string) (*Profile, bool, int) {
-	rangeCount := 0
-	for _, existingProfile := range profiles {
-		if currentUsername == existingProfile.UserRef {
-			return &existingProfile, true, rangeCount
-		}
-		rangeCount++
-	}
-
-	return nil, false, rangeCount
 }
 
 // create a founder
