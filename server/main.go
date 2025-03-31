@@ -12,9 +12,8 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/go-playground/validator/v10"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -23,8 +22,6 @@ import (
 )
 
 // store users locally
-var profiles []Profile
-var founders []Founder
 var updates []Update
 var subscriptions []Subscribe
 
@@ -50,17 +47,17 @@ type Profile struct {
 
 // update type
 type Update struct {
-	ID      string `json:"id"`
-	UserRef string `json:"username"`
-	Title   string `json:"title"`
-	Content string `json:"content"`
+	ID      primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	UserRef primitive.ObjectID `bson:"userRef" json:"-"`
+	Title   string             `json:"title"`
+	Content string             `json:"content"`
 }
 
 // founder type
 type Founder struct {
-	UserRef  string   `json:"username"`
-	Updates  []Update `json:"updates"`
-	StripeId string   `json:"stripe_id"`
+	UserRef       primitive.ObjectID `bson:"userRef" json:"-"`
+	Updates       []Update           `json:"updates"`
+	WalletAddress string             `json:"wallet_addr"`
 }
 
 // subscription type
@@ -107,10 +104,10 @@ func main() {
 	r.HandleFunc("/register", userRegister)
 	r.HandleFunc("/login", userLogin)
 	r.HandleFunc("/create/profile", authMiddleware(createProfile))
-	r.HandleFunc("/create/founder", creteFounder)
-	r.HandleFunc("/create/updates", createUpdates)
-	r.HandleFunc("/founder", fetchFounder)
-	r.HandleFunc("/join/founder", joinUpdates)
+	r.HandleFunc("/create/founder", authMiddleware(creteFounder))
+	r.HandleFunc("/create/updates", authMiddleware(createUpdates))
+	// r.HandleFunc("/founder", fetchFounder)
+	// r.HandleFunc("/join/founder", joinUpdates)
 
 	fmt.Println("Server started on port 8000")
 
@@ -133,7 +130,7 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("Unexpected signing method", token.Header["alg"])
+				return nil, fmt.Errorf("Unexpected signing method %v", token.Header["alg"])
 			}
 			return SECRET, nil
 		})
@@ -145,13 +142,33 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 			ctx := context.WithValue(r.Context(), UserContextKey, claims)
-			fmt.Println(ctx)
-			fmt.Println(claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		} else {
 			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
 		}
 	})
+}
+
+// helper function to extract userId from jwt
+func extractUserIdFromJwt(r *http.Request) (primitive.ObjectID, error) {
+	UserData, ok := r.Context().Value(UserContextKey).(jwt.MapClaims)
+
+	if !ok {
+		return primitive.NilObjectID, fmt.Errorf("unauthorized: invalid token")
+	}
+
+	userIDStr, ok := UserData["userID"].(string)
+	if !ok {
+		return primitive.NilObjectID, fmt.Errorf("unauthorized: invalid user ID format")
+	}
+
+	userID, err := primitive.ObjectIDFromHex(userIDStr)
+	if err != nil {
+		return primitive.NilObjectID, fmt.Errorf("unauthorized: invalid user ID")
+	}
+
+	return userID, nil
+
 }
 
 func homeHandler(w http.ResponseWriter, r *http.Request) {
@@ -293,21 +310,9 @@ func createProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	UserData, ok := r.Context().Value(UserContextKey).(jwt.MapClaims)
-	fmt.Println("create profile userdata:", UserData)
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
+	// userID, err := primitive.ObjectIDFromHex(userIDStr)
+	userID, err := extractUserIdFromJwt(r)
 
-	userIDStr, ok := UserData["userID"].(string)
-	if !ok {
-		http.Error(w, "Invalid user ID", http.StatusUnauthorized)
-		return
-	}
-
-	userID, err := primitive.ObjectIDFromHex(userIDStr)
-	fmt.Println("userID:", userID)
 	if err != nil {
 		http.Error(w, "Invalid user ID", http.StatusUnauthorized)
 		return
@@ -321,7 +326,7 @@ func createProfile(w http.ResponseWriter, r *http.Request) {
 
 	profileData.UserRef = userID
 
-	collection := db.Collection("profile")
+	collection := db.Collection("profiles")
 
 	filter := bson.M{"userRef": userID}
 	update := bson.M{"$set": profileData}
@@ -356,23 +361,39 @@ func creteFounder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existingUser, exists, index := findFounder(founders, founderData.UserRef)
-	_ = existingUser
-	if exists {
-		founders[index].StripeId = founderData.StripeId
-		founders[index].Updates = founderData.Updates
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(founders)
+	userID, err := extractUserIdFromJwt(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	founders = append(founders, founderData)
+	//see if founder exists then update if not create a new one
+	founderData.UserRef = userID
+
+	filter := bson.M{"userRef": userID}
+	update := bson.M{"$set": founderData}
+	opts := options.Update().SetUpsert(true)
+
+	collections := db.Collection("founders")
+
+	result, err := collections.UpdateOne(context.TODO(), filter, update, opts)
+	_ = result
+	if err != nil {
+		http.Error(w, "Error Creating Founder Profile", http.StatusNotModified)
+		return
+	}
+
+	var updatedFounder Founder
+	err = collections.FindOne(context.TODO(), filter).Decode(&updatedFounder)
+	if err != nil {
+		http.Error(w, "Error fetching updated founder", http.StatusInternalServerError)
+		return
+	}
 
 	response := Response{
 		Status:  http.StatusCreated,
 		Message: "Founder profile created",
-		Data:    founders,
+		Data:    updatedFounder,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -381,21 +402,16 @@ func creteFounder(w http.ResponseWriter, r *http.Request) {
 
 }
 
-// helper for create founder
-func findFounder(founders []Founder, currentUsername string) (*Founder, bool, int) {
-	rangeCount := 0
-	for _, exisingFounder := range founders {
-		if currentUsername == exisingFounder.UserRef {
-			return &exisingFounder, true, rangeCount
-		}
-		rangeCount++
-	}
-
-	return nil, false, rangeCount
-}
-
 // create Updates
 func createUpdates(w http.ResponseWriter, r *http.Request) {
+	collection := db.Collection("updates")
+
+	userID, err := extractUserIdFromJwt(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -407,86 +423,65 @@ func createUpdates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updateData.ID = uuid.New().String()
-	existngFounder, exists, index := findFounder(founders, updateData.UserRef)
-	_ = existngFounder
-	if exists {
-		founders[index].Updates = append(founders[index].Updates, updateData)
+	updateData.UserRef = userID
+
+	result, err := collection.InsertOne(r.Context(), updateData)
+	if err != nil {
+		http.Error(w, "Error creating updates in database", http.StatusInternalServerError)
+		return
 	}
 
-	updates = append(updates, updateData)
+	var addedUpdate Update
+	fmt.Println(result.InsertedID)
+	findNewUpdateFilter := bson.M{"_id": result.InsertedID}
+	err = collection.FindOne(r.Context(), findNewUpdateFilter).Decode(&addedUpdate)
+	if err != nil {
+		http.Error(w, "Error fetching new update", http.StatusInternalServerError)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(updates)
+	json.NewEncoder(w).Encode(addedUpdate)
 
 }
 
 // fetch founder profile
-func fetchFounder(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid Method", http.StatusMethodNotAllowed)
-		return
-	}
-
-	id := r.URL.Query().Get("username")
-
-	exisitngFounder, exists := fetchFounderHelper(id)
-
-	if !exists {
-		http.Error(w, "Founder doesnt exist", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/jso")
-	w.WriteHeader(http.StatusFound)
-	json.NewEncoder(w).Encode(exisitngFounder)
-}
-
-func fetchFounderHelper(founderId string) (*Founder, bool) {
-	for _, founder := range founders {
-		if founder.UserRef == founderId {
-			return &founder, true
-		}
-	}
-
-	return nil, false
-}
 
 // create a subscription
-func joinUpdates(w http.ResponseWriter, r *http.Request) {
-	var validate = validator.New()
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+// func joinUpdates(w http.ResponseWriter, r *http.Request) {
+// 	var validate = validator.New()
+// 	if r.Method != http.MethodPost {
+// 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+// 		return
+// 	}
 
-	var subscriptionData Subscribe
-	if err := json.NewDecoder(r.Body).Decode(&subscriptionData); err != nil {
-		http.Error(w, "Invalid Body type", http.StatusBadRequest)
-		return
-	}
+// 	var subscriptionData Subscribe
+// 	if err := json.NewDecoder(r.Body).Decode(&subscriptionData); err != nil {
+// 		http.Error(w, "Invalid Body type", http.StatusBadRequest)
+// 		return
+// 	}
 
-	if err := validate.Struct(subscriptionData); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+// 	if err := validate.Struct(subscriptionData); err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		return
+// 	}
 
-	if subscriptionData.Status != "success" {
-		http.Error(w, "Subscription failed contact at round3adim@gmail.com to resolve", http.StatusBadRequest)
-		return
-	}
+// 	if subscriptionData.Status != "success" {
+// 		http.Error(w, "Subscription failed contact at round3adim@gmail.com to resolve", http.StatusBadRequest)
+// 		return
+// 	}
 
-	subscriptions = append(subscriptions, subscriptionData)
+// 	subscriptions = append(subscriptions, subscriptionData)
 
-	response := Response{
-		Status:  http.StatusCreated,
-		Message: "Subscibed succesfully",
-		Data:    subscriptionData,
-	}
+// 	response := Response{
+// 		Status:  http.StatusCreated,
+// 		Message: "Subscibed succesfully",
+// 		Data:    subscriptionData,
+// 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+// 	w.Header().Set("Content-Type", "application/json")
+// 	w.WriteHeader(http.StatusCreated)
+// 	json.NewEncoder(w).Encode(response)
 
-}
+// }
