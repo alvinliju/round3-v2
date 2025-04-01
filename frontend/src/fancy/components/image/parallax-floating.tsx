@@ -34,9 +34,7 @@ const Floating = ({
   easingFactor = 0.05,
   ...props
 }: FloatingProps) => {
-  const containerRef = useRef<HTMLElement | HTMLDivElement | SVGElement | null>(
-    null,
-  );
+  const containerRef = useRef<HTMLDivElement>(null);
   const elementsMap = useRef(
     new Map<
       string,
