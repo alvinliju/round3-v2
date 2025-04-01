@@ -22,7 +22,7 @@ import (
 )
 
 // store users locally
-var updates []Update
+
 var subscriptions []Subscribe
 
 type ContextKey string
@@ -106,8 +106,8 @@ func main() {
 	r.HandleFunc("/create/profile", authMiddleware(createProfile))
 	r.HandleFunc("/create/founder", authMiddleware(creteFounder))
 	r.HandleFunc("/create/updates", authMiddleware(createUpdates))
-	// r.HandleFunc("/founder", fetchFounder)
-	// r.HandleFunc("/join/founder", joinUpdates)
+	r.HandleFunc("/founder", authMiddleware(fetchFounder))
+	// r.HandleFunc("/join/founder", authMijoinUpdates(joinFounder))
 
 	fmt.Println("Server started on port 8000")
 
@@ -194,7 +194,7 @@ func userRegister(w http.ResponseWriter, r *http.Request) {
 	collection := db.Collection("users")
 
 	var existingUser User
-	err := collection.FindOne(context.TODO(), bson.M{"username": user.Username}).Decode(&existingUser)
+	err := collection.FindOne(r.Context(), bson.M{"username": user.Username}).Decode(&existingUser)
 	if err == nil {
 		http.Error(w, "User already exists", http.StatusInternalServerError)
 		return
@@ -212,7 +212,7 @@ func userRegister(w http.ResponseWriter, r *http.Request) {
 
 	user.Role = "Reader"
 
-	ctx := context.TODO()
+	ctx := r.Context()
 
 	result, err := collection.InsertOne(ctx, user)
 	if err != nil {
@@ -254,7 +254,7 @@ func userLogin(w http.ResponseWriter, r *http.Request) {
 
 	//find user in db
 	var existingUserFromDB User
-	ctx := context.TODO()
+	ctx := r.Context()
 	err := collection.FindOne(ctx, bson.M{"username": userCredentials.Username}).Decode(&existingUserFromDB)
 
 	if err == mongo.ErrNoDocuments {
@@ -332,7 +332,7 @@ func createProfile(w http.ResponseWriter, r *http.Request) {
 	update := bson.M{"$set": profileData}
 	opts := options.Update().SetUpsert(true)
 
-	result, err := collection.UpdateOne(context.TODO(), filter, update, opts)
+	result, err := collection.UpdateOne(r.Context(), filter, update, opts)
 	_ = result
 	if err != nil {
 		http.Error(w, "Failed to save profile", http.StatusNotFound)
@@ -340,7 +340,7 @@ func createProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var Updateduser Profile
-	collection.FindOne(context.TODO(), filter).Decode(&Updateduser)
+	collection.FindOne(r.Context(), filter).Decode(&Updateduser)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -376,7 +376,7 @@ func creteFounder(w http.ResponseWriter, r *http.Request) {
 
 	collections := db.Collection("founders")
 
-	result, err := collections.UpdateOne(context.TODO(), filter, update, opts)
+	result, err := collections.UpdateOne(r.Context(), filter, update, opts)
 	_ = result
 	if err != nil {
 		http.Error(w, "Error Creating Founder Profile", http.StatusNotModified)
@@ -384,7 +384,7 @@ func creteFounder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var updatedFounder Founder
-	err = collections.FindOne(context.TODO(), filter).Decode(&updatedFounder)
+	err = collections.FindOne(r.Context(), filter).Decode(&updatedFounder)
 	if err != nil {
 		http.Error(w, "Error fetching updated founder", http.StatusInternalServerError)
 		return
@@ -440,6 +440,23 @@ func createUpdates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	//TODO: embed the newly create update ID to founder document
+	filter := bson.M{"userRef": userID}
+	update := bson.M{
+		"$set": bson.M{
+			"updates": []Update{}, // Initialize if doesn't exist
+		},
+		"$push": bson.M{
+			"updates": addedUpdate.ID,
+		},
+	}
+
+	_, err = db.Collection("founders").UpdateOne(r.Context(), filter, update)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(addedUpdate)
@@ -448,9 +465,38 @@ func createUpdates(w http.ResponseWriter, r *http.Request) {
 
 // fetch founder profile
 
-// create a subscription
-// func joinUpdates(w http.ResponseWriter, r *http.Request) {
-// 	var validate = validator.New()
+func fetchFounder(w http.ResponseWriter, r *http.Request) {
+
+	collection := db.Collection("founders")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	username := r.URL.Query().Get("username")
+
+	var fetchedFounder Founder
+
+	collection.FindOne(r.Context(), bson.M{"username": username}).Decode(&fetchedFounder)
+
+	response := Response{
+		Status:  http.StatusFound,
+		Message: "Fetched founder success",
+		Data:    fetchedFounder,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(response)
+}
+
+// // create a subscription
+// func joinFounder(w http.ResponseWriter, r *http.Request) {
+// 	userID, err := extractUserIdFromJwt(r)
+// 	if err != nil {
+// 		http.Error(w, err.Error(), http.StatusInternalServerError)
+// 		return
+// 	}
 // 	if r.Method != http.MethodPost {
 // 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 // 		return
