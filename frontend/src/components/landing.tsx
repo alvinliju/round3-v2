@@ -48,7 +48,7 @@ const Landing = () => {
 
   return (
     <div
-      className="flex w-dvw h-dvh justify-center items-center bg-black overflow-hidden"
+      className="flex w-dvw h-dvh justify-center items-center bg-black overflow-hidden p-4"
       ref={scope}
     >
       <motion.div
@@ -66,7 +66,7 @@ const Landing = () => {
         <p className="text-5xl md:text-7xl z-50 text-white font-calendas italic">
           round3.
         </p>
-        <p className="text-xl md:text-2xl z-50 text-white font-calendas max-w-2xl">
+        <p className="text-xl md:text-2xl z-50 text-white font-calendas max-w-2xl backdrop-blur-1">
           A private community where founders share the real journey and readers
           invest in tomorrow's success stories.
         </p>
@@ -80,7 +80,10 @@ const Landing = () => {
         </div>
       </motion.div>
 
-      <Floating sensitivity={-1} className="overflow-hidden">
+      <Floating
+        sensitivity={-1}
+        className="overflow-hidden opacity-50 sm:opacity-100"
+      >
         <FloatingElement depth={0.5} className="top-[8%] left-[11%]">
           <motion.img
             initial={{ opacity: 0 }}
