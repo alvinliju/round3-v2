@@ -108,6 +108,7 @@ func main() {
 	r.HandleFunc("/create/updates", authMiddleware(createUpdates))
 	r.HandleFunc("/founder", authMiddleware(fetchFounder))
 	// r.HandleFunc("/join/founder", authMijoinUpdates(joinFounder))
+	//
 
 	fmt.Println("Server started on port 8000")
 
@@ -200,15 +201,8 @@ func userRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err != mongo.ErrNoDocuments {
-		http.Error(w, "Error checking username", http.StatusInternalServerError)
-		return
-	}
-
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(user.Password), 12)
 	user.Password = string(hashed)
-
-	user.ID = primitive.NewObjectID()
 
 	user.Role = "Reader"
 
