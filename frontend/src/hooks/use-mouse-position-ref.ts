@@ -1,7 +1,7 @@
 import { RefObject, useEffect, useRef } from "react";
 
 export const useMousePositionRef = (
-  containerRef?: RefObject<HTMLElement | SVGElement | null>,
+  containerRef?: RefObject<HTMLElement | HTMLDivElement | SVGElement | null>,
 ) => {
   const positionRef = useRef({ x: 0, y: 0 });
 
