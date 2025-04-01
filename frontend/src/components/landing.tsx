@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { motion, stagger, useAnimate } from "motion/react";
+import { Badge } from "./ui/badge";
 
 import Floating, {
   FloatingElement,
@@ -57,12 +58,8 @@ const Landing = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.88, delay: 1.5 }}
       >
-        <button className="relative inline-flex h-8 overflow-hidden rounded-full p-[1px] focus:outline-none focus:ring-2 focus:ring-slate-400 focus:ring-offset-2 focus:ring-offset-slate-50">
-          <span className="absolute inset-[-1000%] animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_90deg_at_50%_50%,#FFFF_0%,#3b82f6_50%,#E2CBFF_100%)]" />
-          <span className="inline-flex h-full w-full cursor-pointer items-center justify-center rounded-full bg-slate-950 px-3 py-1 text-sm font-medium text-white backdrop-blur-3xl">
-            Lauching this summer.
-          </span>
-        </button>
+        <Badge variant="default">Launching soon.</Badge>
+
         <p className="text-5xl md:text-7xl z-50 text-white font-calendas italic">
           round3.
         </p>
@@ -82,7 +79,7 @@ const Landing = () => {
 
       <Floating
         sensitivity={-1}
-        className="overflow-hidden opacity-50 sm:opacity-100"
+        className="overflow-hidden opacity-25 sm:opacity-100"
       >
         <FloatingElement depth={0.5} className="top-[8%] left-[11%]">
           <motion.img
