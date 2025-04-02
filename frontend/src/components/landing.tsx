@@ -58,7 +58,7 @@ const Landing = () => {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.88, delay: 1.5 }}
       >
-        <Badge variant="default">Launching soon.</Badge>
+        <Badge variant="secondary">Launching soon.</Badge>
 
         <p className="text-5xl md:text-7xl z-50 text-white font-calendas italic">
           round3.

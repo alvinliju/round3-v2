@@ -111,7 +111,7 @@ export default function RegisterComponent() {
                 </SelectTrigger>
                 <SelectContent className="w-full">
                   <SelectItem value="Reader">Reader</SelectItem>
-                  <SelectItem value="Writer">Writer</SelectItem>
+                  <SelectItem value="Founder">Founder</SelectItem>
                 </SelectContent>
               </Select>
             </div>

@@ -40,9 +40,11 @@ type User struct {
 
 // profile type
 type Profile struct {
-	UserRef primitive.ObjectID `bson:"userRef" json:"-"`
-	Bio     string             `json:"bio"`
-	Website string             `json:"website"`
+	UserRef    primitive.ObjectID `bson:"userRef" json:"-"`
+	Bio        string             `json:"bio"`
+	Website    string             `json:"website"`
+	ProfileUrl string             `json:"profileurl"`
+	Twitter    string             `json:"twitter"`
 }
 
 // update type
@@ -58,6 +60,13 @@ type Founder struct {
 	UserRef       primitive.ObjectID `bson:"userRef" json:"-"`
 	Updates       []Update           `json:"updates"`
 	WalletAddress string             `json:"wallet_addr"`
+}
+
+type Onboarding struct {
+	ProfileUrl string `json:"profileUrl"`
+	Bio        string `json:"bio"`
+	Website    string `json:"website"`
+	Twitter    string `json:"twitter"`
 }
 
 // subscription type
@@ -119,12 +128,15 @@ func main() {
 	r.HandleFunc("/", homeHandler)
 	r.HandleFunc("/register", userRegister)
 	r.HandleFunc("/login", userLogin)
-	r.HandleFunc("/create/profile", authMiddleware(createProfile))
+	r.HandleFunc("/create/profile", authMiddleware(founderOnlyMiddleware(createProfile)))
 	r.HandleFunc("/create/founder", authMiddleware(creteFounder))
 	r.HandleFunc("/create/updates", authMiddleware(createUpdates))
 	r.HandleFunc("/founder", authMiddleware(fetchFounder))
 	// r.HandleFunc("/join/founder", authMijoinUpdates(joinFounder))
 	//
+
+	//onboard handler
+	r.HandleFunc("/onboarding", authMiddleware(founderOnlyMiddleware(onbaordFounder)))
 
 	handler := enableCors(r)
 	fmt.Println("Server started on port 8000")
@@ -164,6 +176,25 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		} else {
 			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
 		}
+	})
+}
+
+func founderOnlyMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(UserContextKey).(jwt.MapClaims)
+		if !ok || claims["role"] != "founder" {
+			errResponse := Response{
+				Status:  http.StatusUnauthorized,
+				Message: "Forbidden - Founder access only",
+				Data:    nil,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(errResponse)
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -289,13 +320,30 @@ func userLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if userCredentials.Email == "" || userCredentials.Password == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(Response{
+			Status:  http.StatusBadRequest,
+			Message: "Email and password are required",
+			Data:    nil,
+		})
+		return
+	}
+
 	//find user in db
 	var existingUserFromDB User
 	ctx := r.Context()
 	err := collection.FindOne(ctx, bson.M{"email": userCredentials.Email}).Decode(&existingUserFromDB)
 
 	if err == mongo.ErrNoDocuments {
-		http.Error(w, "User doesnt exist", http.StatusNotFound)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(Response{
+			Status:  http.StatusNotFound,
+			Message: "User does not exist",
+			Data:    nil,
+		})
 		return
 	}
 
@@ -526,6 +574,99 @@ func fetchFounder(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(response)
+}
+
+func onbaordFounder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var onbardingData Onboarding
+	if err := json.NewDecoder(r.Body).Decode(&onbardingData); err != nil {
+		http.Error(w, "Invalid Body requst", http.StatusBadRequest)
+		return
+	}
+
+	userID, err := extractUserIdFromJwt(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	userFilter := bson.M{"_id": userID}
+	userUpdate := bson.M{"$set": bson.M{"onboarding": true}}
+	userOpts := options.Update().SetUpsert(true)
+
+	usersCollection := db.Collection("users")
+
+	result, err := usersCollection.UpdateOne(r.Context(), userFilter, userUpdate, userOpts)
+	_ = result
+	if err != nil {
+		http.Error(w, "Error Creating Founder Profile", http.StatusNotModified)
+		return
+	}
+
+	//founder table update
+	founderData := Founder{
+		UserRef:       userID,
+		Updates:       nil,
+		WalletAddress: "",
+	}
+
+	founderUpdate := bson.M{"$set": founderData}
+	opts := options.Update().SetUpsert(true)
+
+	_, err = db.Collection("founders").UpdateOne(r.Context(), userFilter, founderUpdate, opts)
+	if err != nil {
+		errResponse := Response{
+			Status:  http.StatusInternalServerError,
+			Message: "Failed to update founder information",
+			Data:    nil,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(errResponse)
+
+	}
+
+	//profile update
+	profileData := Profile{
+		UserRef:    userID,
+		ProfileUrl: onbardingData.ProfileUrl,
+		Bio:        onbardingData.Bio,
+		Website:    onbardingData.Website,
+		Twitter:    onbardingData.Twitter,
+	}
+
+	profileUpdate := bson.M{"$set": profileData}
+	profileOpts := options.Update().SetUpsert(true)
+
+	_, err = db.Collection("profiles").UpdateOne(r.Context(), userFilter, profileUpdate, profileOpts)
+	if err != nil {
+		errResponse := Response{
+			Status:  http.StatusInternalServerError,
+			Message: "Failed to update profile information",
+			Data:    nil,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(errResponse)
+
+	}
+
+	response := Response{
+		Status:  http.StatusCreated,
+		Message: "Founder profile created",
+		Data:    nil,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(response)
+
 }
 
 // // create a subscription
