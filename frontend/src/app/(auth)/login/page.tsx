@@ -47,7 +47,7 @@ export default function LoginComponet() {
   };
   return (
     <div>
-      <Card className="max-w-md mx-auto font-calendas">
+      <Card className="w-sm md:max-w-md mx-auto font-calendas">
         <CardHeader>
           <CardTitle>
             <p className="text-center">Login</p>
