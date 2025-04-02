@@ -61,7 +61,7 @@ export default function RegisterComponent() {
   };
   return (
     <div>
-      <Card className="w-sm md:max-w-md mx-auto font-calendas">
+      <Card className="w-sm md:max-w-md mx-auto font-calendas p-4">
         <CardHeader>
           <CardTitle>
             <p className="text-center">Register</p>

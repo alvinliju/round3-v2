@@ -55,7 +55,7 @@ export default function OnboardingComponent() {
   };
   return (
     <div>
-      <Card className="w-sm md:max-w-md mx-auto font-calendas">
+      <Card className="w-sm md:max-w-md mx-auto font-calendas p-4">
         <CardHeader>
           <CardTitle>
             <p className="text-center">Setup your founder profile</p>
