@@ -13,12 +13,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
 import { useState } from "react";
-import { colgroup } from "motion/react-client";
+import { useRouter } from "next/navigation";
 
 export default function LoginComponet() {
   const [error, setError] = useState("");
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const router = useRouter();
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -29,12 +30,16 @@ export default function LoginComponet() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       });
 
       const data = await response.json();
 
-      console.log(data);
+      if (response.ok && data.data.Token) {
+        const token = data.data.Token;
+        localStorage.setItem("token", token);
+        router.push("/");
+      }
     } catch (err) {
       setError("An error occurred during login");
       console.error("Login error:", error);
@@ -44,9 +49,11 @@ export default function LoginComponet() {
     <div>
       <Card className="max-w-md mx-auto font-calendas">
         <CardHeader>
-          <CardTitle>Login</CardTitle>
+          <CardTitle>
+            <p className="text-center">Login</p>
+          </CardTitle>
           <CardDescription>
-            Enter you email and password to login
+            <p className="text-center">Enter you email and password to login</p>
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -59,8 +66,8 @@ export default function LoginComponet() {
               <Label>Email</Label>
               <Input
                 type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 placeholder="johndoe@gmail.com"
               ></Input>
             </div>
@@ -73,10 +80,10 @@ export default function LoginComponet() {
                 placeholder="password"
               ></Input>
             </div>
+            <Button className="w-full" type="submit">
+              Login
+            </Button>
             <CardFooter className="flex flex-col gap-2">
-              <Button className="w-full" type="submit">
-                Login
-              </Button>
               <Link href="/register" className="underline pt-4">
                 Dont have an account? Create one
               </Link>

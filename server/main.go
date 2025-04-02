@@ -10,10 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
-
 	"github.com/golang-jwt/jwt/v5"
-
+	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -32,10 +30,12 @@ const (
 )
 
 type User struct {
-	ID       primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
-	Username string             `json:"username"`
-	Password string             `json:"password"`
-	Role     string             `json:"role" default:"reader"`
+	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	Username   string             `json:"username" validate:"required"`
+	Email      string             `json:"email" validate:"required,email"`
+	Password   string             `json:"password" validate:"required, min=8"`
+	Role       string             `json:"role" default:"reader"`
+	Onboarding bool               `json:"onboarding"`
 }
 
 // profile type
@@ -96,6 +96,22 @@ func init() {
 	fmt.Println("Connected to database")
 }
 
+func enableCors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*") // Allow all origins
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 
 	r := http.NewServeMux()
@@ -110,9 +126,10 @@ func main() {
 	// r.HandleFunc("/join/founder", authMijoinUpdates(joinFounder))
 	//
 
+	handler := enableCors(r)
 	fmt.Println("Server started on port 8000")
 
-	if err := http.ListenAndServe(":8000", r); err != nil {
+	if err := http.ListenAndServe(":8000", handler); err != nil {
 		fmt.Println("Error starting the server")
 	}
 
@@ -197,14 +214,40 @@ func userRegister(w http.ResponseWriter, r *http.Request) {
 	var existingUser User
 	err := collection.FindOne(r.Context(), bson.M{"username": user.Username}).Decode(&existingUser)
 	if err == nil {
-		http.Error(w, "User already exists", http.StatusInternalServerError)
+		error := Response{
+			Status:  http.StatusConflict,
+			Message: "User already exists. Please try logging in or choose another username.",
+			Data:    nil,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(error)
+		return
+	}
+
+	var existingEmailUser User
+	err = collection.FindOne(r.Context(), bson.M{"email": user.Email}).Decode(&existingEmailUser)
+	if err == nil {
+		error := Response{
+			Status:  http.StatusConflict,
+			Message: "User already exists. Please try logging in or choose another email.",
+			Data:    nil,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(error)
 		return
 	}
 
 	hashed, _ := bcrypt.GenerateFromPassword([]byte(user.Password), 12)
 	user.Password = string(hashed)
 
-	user.Role = "Reader"
+	if user.Role == "" {
+		user.Role = "reader"
+	}
+
+	user.Role = strings.ToLower(user.Role)
+	user.Onboarding = false
 
 	ctx := r.Context()
 
@@ -227,7 +270,7 @@ func userRegister(w http.ResponseWriter, r *http.Request) {
 
 // Login Route
 type loginUser struct {
-	Username string `json:"username" `
+	Email    string `json:"email" `
 	Password string `json:"password" `
 }
 
@@ -249,7 +292,7 @@ func userLogin(w http.ResponseWriter, r *http.Request) {
 	//find user in db
 	var existingUserFromDB User
 	ctx := r.Context()
-	err := collection.FindOne(ctx, bson.M{"username": userCredentials.Username}).Decode(&existingUserFromDB)
+	err := collection.FindOne(ctx, bson.M{"email": userCredentials.Email}).Decode(&existingUserFromDB)
 
 	if err == mongo.ErrNoDocuments {
 		http.Error(w, "User doesnt exist", http.StatusNotFound)
@@ -263,11 +306,12 @@ func userLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	claims := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"userID": existingUserFromDB.ID.Hex(),
-		"iss":    "round3dev",
-		"role":   existingUserFromDB.Role,
-		"exp":    time.Now().Add(time.Hour).Unix(),
-		"iat":    time.Now().Unix(),
+		"userID":     existingUserFromDB.ID.Hex(),
+		"iss":        "round3dev",
+		"role":       existingUserFromDB.Role,
+		"onboarding": existingUserFromDB.Onboarding,
+		"exp":        time.Now().Add(time.Hour).Unix(),
+		"iat":        time.Now().Unix(),
 	})
 
 	token, err := claims.SignedString(SECRET)
